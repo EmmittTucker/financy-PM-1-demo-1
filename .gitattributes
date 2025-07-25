@@ -1,2 +1,3 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+data/investment_conversations_20250724_050500_PM.json filter=lfs diff=lfs merge=lfs -text
