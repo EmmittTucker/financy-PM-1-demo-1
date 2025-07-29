@@ -1,294 +1,327 @@
+"""
+AI Financial Portfolio Advisor
+
+A professional financial advisory application powered by fine-tuned Llama 3.1 8B model.
+Completely redesigned to prevent health check timeouts during model loading.
+"""
+
 import streamlit as st
-import os
-import sys
 import time
-from typing import Optional
+from datetime import datetime
+from src.config import DEMO_MODE, APP_TITLE, APP_DESCRIPTION, FORM_OPTIONS
+from src.model_utils import get_model_loader, generate_demo_response
 
-# Add the current directory to Python path
-sys.path.append(os.path.dirname(__file__))
-
-# Import configuration and model utilities
-from src.config import (
-    DEMO_MODE, MAX_QUESTIONS, FALLBACK_MESSAGE,
-    GENDER_OPTIONS, COUNTRY_OPTIONS, INVESTMENT_BACKGROUND_OPTIONS,
-    INVESTMENT_GOALS_OPTIONS, TIME_HORIZON_OPTIONS, RISK_TOLERANCE_OPTIONS,
-    DEFAULT_AGE, DEFAULT_GENDER, DEFAULT_COUNTRY, DEFAULT_INVESTMENT_BACKGROUND,
-    DEFAULT_INVESTMENT_GOALS, DEFAULT_TIME_HORIZON, DEFAULT_RISK_TOLERANCE
+# Page configuration
+st.set_page_config(
+    page_title=APP_TITLE,
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-from src.model_utils import FinancialAdvisorModel, generate_demo_response
 
-@st.cache_resource
-def initialize_model():
-    """Initialize the financial advisor model"""
-    try:
-        model_instance = FinancialAdvisorModel()
-        success, message = model_instance.load_model()
+# Professional CSS styling
+st.markdown("""
+    <style>
+    .main > div {
+        padding-top: 2rem;
+    }
+    .stButton > button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 5px;
+    }
+    .stButton > button:hover {
+        background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+    }
+    .chat-message {
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    .user-message {
+        background-color: #e3f2fd;
+        border-left: 4px solid #2196f3;
+    }
+    .assistant-message {
+        background-color: #f3e5f5;
+        border-left: 4px solid #9c27b0;
+    }
+    .status-container {
+        border: 2px solid #4CAF50;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+        background-color: #f0f8f0;
+    }
+    .loading-container {
+        border: 2px solid #FF9800;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+        background-color: #fff8e1;
+    }
+    .error-container {
+        border: 2px solid #f44336;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 1rem 0;
+        background-color: #ffebee;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+
+def initialize_session_state():
+    """Initialize all session state variables."""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    if "user_profile" not in st.session_state:
+        st.session_state.user_profile = {}
+    
+    if "model_loader" not in st.session_state:
+        st.session_state.model_loader = None
+    
+    if "model_check_time" not in st.session_state:
+        st.session_state.model_check_time = 0
+    
+    if "show_profile_form" not in st.session_state:
+        st.session_state.show_profile_form = False
+
+
+def get_model_status():
+    """Get model loading status with caching to prevent excessive checks."""
+    current_time = time.time()
+    
+    # Only check status every 2 seconds to prevent blocking
+    if current_time - st.session_state.model_check_time < 2:
+        return st.session_state.get("last_model_status", {
+            'is_loading': False,
+            'is_loaded': False,
+            'progress': 0,
+            'message': 'Initializing...',
+            'error': None
+        })
+    
+    if st.session_state.model_loader is None:
+        st.session_state.model_loader = get_model_loader()
+    
+    status = st.session_state.model_loader.get_status()
+    st.session_state.last_model_status = status
+    st.session_state.model_check_time = current_time
+    
+    return status
+
+
+def start_model_loading():
+    """Start model loading in background if not already started."""
+    if st.session_state.model_loader is None:
+        st.session_state.model_loader = get_model_loader()
+    
+    if not st.session_state.model_loader.is_loading and not st.session_state.model_loader.is_loaded:
+        st.session_state.model_loader.start_loading()
+
+
+def show_model_loading_status():
+    """Display model loading status with progress indicators."""
+    status = get_model_status()
+    
+    if status['is_loading']:
+        st.markdown('<div class="loading-container">', unsafe_allow_html=True)
+        st.info("🔄 **AI Model Loading**")
+        st.markdown(f"**Status**: {status['message']}")
         
-        if success:
-            st.success(f"✅ {message}")
-            return model_instance
+        # Progress bar
+        progress = status['progress'] / 100.0
+        st.progress(progress)
+        st.markdown(f"**Progress**: {status['progress']:.0f}%")
+        
+        if status['progress'] < 30:
+            st.markdown("⏱️ **First-time loading**: This may take 3-5 minutes on CPU. Please be patient!")
+        elif status['progress'] < 70:
+            st.markdown("🧠 **Loading neural network**: The 8B parameter model is being initialized...")
         else:
-            st.error(f"❌ {message}")
-            st.info("💡 **Fallback**: Using demo mode for this session.")
-            return None
-    except Exception as e:
-        st.error(f"❌ Model initialization failed: {str(e)}")
+            st.markdown("🔧 **Finalizing setup**: Almost ready!")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Auto-refresh every 2 seconds during loading
+        time.sleep(0.1)  # Small delay to prevent excessive refreshing
+        st.rerun()
+        
+    elif status['error']:
+        st.markdown('<div class="error-container">', unsafe_allow_html=True)
+        st.error(f"❌ **Model Loading Failed**: {status['error']}")
         st.info("💡 **Fallback**: Using demo mode for this session.")
-        return None
-
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    elif status['is_loaded']:
+        st.markdown('<div class="status-container">', unsafe_allow_html=True)
+        st.success("✅ **AI Model Ready**: Llama 3.1 8B Financial Advisor is online!")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 def show_user_profile_form():
-    """Display user profile form in sidebar"""
+    """Display user profile form in sidebar."""
     with st.sidebar:
-        st.header("👤 Your Financial Profile")
-        st.markdown("*Help me provide personalized advice*")
+        st.header("👤 User Profile")
         
         with st.form("user_profile_form"):
-            age = st.number_input(
-                "Age", 
-                min_value=18, 
-                max_value=100, 
-                value=DEFAULT_AGE,
-                help="Your current age"
+            experience = st.selectbox(
+                "Investment Experience",
+                FORM_OPTIONS["experience_levels"],
+                index=FORM_OPTIONS["experience_levels"].index(st.session_state.user_profile.get("experience_level", "Beginner"))
             )
             
-            gender = st.selectbox(
-                "Gender", 
-                GENDER_OPTIONS, 
-                index=GENDER_OPTIONS.index(DEFAULT_GENDER)
-            )
-            
-            country = st.selectbox(
-                "Country", 
-                COUNTRY_OPTIONS, 
-                index=COUNTRY_OPTIONS.index(DEFAULT_COUNTRY)
-            )
-            
-            investment_background = st.selectbox(
-                "Investment Experience", 
-                INVESTMENT_BACKGROUND_OPTIONS,
-                index=INVESTMENT_BACKGROUND_OPTIONS.index(DEFAULT_INVESTMENT_BACKGROUND)
-            )
-            
-            investment_goals = st.selectbox(
-                "Primary Investment Goal", 
-                INVESTMENT_GOALS_OPTIONS,
-                index=INVESTMENT_GOALS_OPTIONS.index(DEFAULT_INVESTMENT_GOALS)
-            )
-            
-            time_horizon = st.selectbox(
-                "Investment Time Horizon", 
-                TIME_HORIZON_OPTIONS,
-                index=TIME_HORIZON_OPTIONS.index(DEFAULT_TIME_HORIZON)
+            goals = st.multiselect(
+                "Investment Goals",
+                FORM_OPTIONS["investment_goals"],
+                default=st.session_state.user_profile.get("investment_goals", [])
             )
             
             risk_tolerance = st.selectbox(
-                "Risk Tolerance", 
-                RISK_TOLERANCE_OPTIONS,
-                index=RISK_TOLERANCE_OPTIONS.index(DEFAULT_RISK_TOLERANCE)
+                "Risk Tolerance",
+                FORM_OPTIONS["risk_tolerances"],
+                index=FORM_OPTIONS["risk_tolerances"].index(st.session_state.user_profile.get("risk_tolerance", "Moderate"))
             )
             
-            submitted = st.form_submit_button("💾 Save Profile", use_container_width=True)
+            time_horizon = st.selectbox(
+                "Investment Time Horizon",
+                FORM_OPTIONS["time_horizons"],
+                index=FORM_OPTIONS["time_horizons"].index(st.session_state.user_profile.get("time_horizon", "5-10 years"))
+            )
+            
+            submitted = st.form_submit_button("💾 Save Profile")
             
             if submitted:
                 st.session_state.user_profile = {
-                    "age": age,
-                    "gender": gender,
-                    "country": country,
-                    "investment_background": investment_background,
-                    "investment_goals": investment_goals,
-                    "time_horizon": time_horizon,
-                    "risk_tolerance": risk_tolerance
+                    "experience_level": experience,
+                    "investment_goals": goals,
+                    "risk_tolerance": risk_tolerance,
+                    "time_horizon": time_horizon
                 }
                 st.success("✅ Profile saved!")
                 st.rerun()
 
 
+def generate_response(prompt: str) -> str:
+    """Generate response using model or demo mode."""
+    if DEMO_MODE:
+        return generate_demo_response(prompt)
+    
+    status = get_model_status()
+    
+    if status['is_loaded'] and st.session_state.model_loader:
+        return st.session_state.model_loader.generate_response(
+            st.session_state.messages,
+            st.session_state.user_profile
+        )
+    else:
+        return generate_demo_response(prompt)
+
 
 def main():
-    st.set_page_config(
-        page_title="AI Financial Portfolio Advisor - Investor Demo",
-        page_icon="🚀",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Custom CSS for professional appearance
-    st.markdown("""
-    <style>
-    .main-header {
-        text-align: center;
-        padding: 1rem 0;
-        background: linear-gradient(90deg, #1f4e79, #2e7d32);
-        color: white;
-        border-radius: 10px;
-        margin-bottom: 2rem;
-    }
-    .model-info {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 4px solid #1f4e79;
-    }
-    .chat-container {
-        max-height: 600px;
-        overflow-y: auto;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    """Main application logic with non-blocking model loading."""
+    initialize_session_state()
     
     # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🚀 AI Financial Portfolio Advisor</h1>
-        <p><em>Powered by Fine-tuned Llama 3.1 8B | tuc111/financy-PM-1</em></p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title(APP_TITLE)
+    st.markdown(APP_DESCRIPTION)
     
-    # Initialize model (only once)
-    if "model_instance" not in st.session_state:
-        st.session_state.model_instance = None
-        st.session_state.model_loaded = False
-        st.session_state.model_loading = False
-        st.session_state.fallback_mode = False
-    
-    # Handle model loading state
-    if not st.session_state.model_loaded and not DEMO_MODE and not st.session_state.model_loading:
-        st.session_state.model_loading = True
-        
-        # Show loading UI first, then load model
-        loading_container = st.container()
-        with loading_container:
-            st.info("🔄 **Loading AI Financial Advisor Model**")
-            st.markdown("⏱️ **First-time loading**: The 8B model takes 3-5 minutes on CPU. Please be patient!")
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Update progress indicators
-            for i in range(10):
-                progress_bar.progress((i + 1) * 10)
-                status_text.text(f"Loading model components... ({i+1}/10)")
-                time.sleep(0.1)  # Small delay to show progress
-            
-            # Now load the model
-            try:
-                model_instance = initialize_model()
-                st.session_state.model_instance = model_instance
-                st.session_state.model_loaded = True
-                
-                if model_instance is None:
-                    st.session_state.fallback_mode = True
-                    status_text.error("❌ Model loading failed - using demo mode")
-                else:
-                    st.session_state.fallback_mode = False
-                    status_text.success("✅ Model loaded successfully!")
-                    
-                progress_bar.progress(100)
-                time.sleep(1)
-                
-                # Clear loading UI and rerun
-                loading_container.empty()
-                st.rerun()
-                
-            except Exception as e:
-                st.session_state.fallback_mode = True
-                st.session_state.model_loaded = True
-                status_text.error(f"❌ Error: {str(e)}")
-                st.info("💡 **Fallback**: Using demo mode for this session.")
-    
-    # Initialize session state
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "question_count" not in st.session_state:
-        st.session_state.question_count = 0
-    if "user_profile" not in st.session_state:
-        st.session_state.user_profile = None
-    
-    # Show user profile form
+    # Sidebar
     show_user_profile_form()
     
-    # Model status info
-    col1, col2 = st.columns([2, 1])
+    with st.sidebar:
+        st.markdown("---")
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.messages = []
+            st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### 🔧 Status")
+        
+        if DEMO_MODE:
+            st.info("📝 **Demo Mode Active**")
+            st.markdown("Using simulated responses for demonstration.")
+        else:
+            # Start model loading if needed (non-blocking)
+            start_model_loading()
+            
+            # Show current status
+            status = get_model_status()
+            if status['is_loaded']:
+                st.success("🤖 **AI Model**: Online")
+            elif status['is_loading']:
+                st.warning("⏳ **AI Model**: Loading...")
+            elif status['error']:
+                st.error("❌ **AI Model**: Error")
+            else:
+                st.info("💤 **AI Model**: Initializing...")
+    
+    # Main content area
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        if DEMO_MODE or st.session_state.get("fallback_mode", False):
-            st.markdown("""
-            <div class="model-info">
-                <h4>⚡ Demo Mode Active</h4>
-                <p>Demonstrating AI responses with fallback system. Full model integration available for production deployment.</p>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div class="model-info">
-                <h4>🤖 AI Model Status: Active</h4>
-                <p>Using fine-tuned Llama 3.1 8B model optimized for financial advisory services</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    with col2:
-        st.metric("Questions Used", f"{st.session_state.question_count}/{MAX_QUESTIONS}")
-        if st.session_state.user_profile:
-            st.success("👤 Profile Set")
-        else:
-            st.warning("👤 Set Profile")
-    
-    # Chat interface
-    st.markdown("### 💬 Financial Advisory Chat")
-    
-    # Display chat messages
-    chat_container = st.container()
-    with chat_container:
+        # Show model loading status if applicable
+        if not DEMO_MODE:
+            show_model_loading_status()
+        
+        # Chat interface
+        st.subheader("💬 Financial Advisory Chat")
+        
+        # Display chat messages
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
-    
-    # Chat input
-    if st.session_state.question_count < MAX_QUESTIONS:
-        if prompt := st.chat_input("Ask me about your financial portfolio, investments, retirement planning..."):
+        
+        # Chat input
+        if prompt := st.chat_input("Ask your financial question..."):
             # Add user message
             st.session_state.messages.append({"role": "user", "content": prompt})
-            st.session_state.question_count += 1
             
             with st.chat_message("user"):
                 st.markdown(prompt)
             
-            # Generate response
+            # Generate and display assistant response
             with st.chat_message("assistant"):
-                with st.spinner("🤔 Analyzing your financial question..."):
-                    if DEMO_MODE or st.session_state.get("fallback_mode", False):
-                        response = generate_demo_response(prompt)
-                    else:
-                        try:
-                            response = st.session_state.model_instance.generate_response(
-                                st.session_state.messages,
-                                st.session_state.user_profile
-                            )
-                        except Exception as e:
-                            st.error(f"Model error: {str(e)}")
-                            response = generate_demo_response(prompt)
-                
+                with st.spinner("Thinking..."):
+                    response = generate_response(prompt)
                 st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-    else:
-        st.markdown(FALLBACK_MESSAGE)
-        if st.button("🔄 Start New Session", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key not in ["model_instance", "model_loaded"]:
-                    del st.session_state[key]
-            st.rerun()
+            
+            # Add assistant message
+            st.session_state.messages.append({"role": "assistant", "content": response})
     
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: #666; padding: 1rem;">
-        <p><strong>AI Financial Portfolio Advisor</strong> | Investor Demo</p>
-        <p><em>Powered by fine-tuned Llama 3.1 8B specialized for financial advisory services</em></p>
-        <p>⚠️ This is an AI assistant. Always consult with qualified financial professionals for major decisions.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    with col2:
+        st.subheader("📊 Quick Stats")
+        
+        # User profile summary
+        if st.session_state.user_profile:
+            st.markdown("**Profile Set** ✅")
+            st.markdown(f"**Experience**: {st.session_state.user_profile.get('experience_level', 'Not set')}")
+            st.markdown(f"**Risk**: {st.session_state.user_profile.get('risk_tolerance', 'Not set')}")
+        else:
+            st.markdown("**Profile**: Not configured")
+            if st.button("⚙️ Set Profile"):
+                st.session_state.show_profile_form = True
+        
+        # Chat stats
+        st.markdown(f"**Messages**: {len(st.session_state.messages)}")
+        
+        # Session info
+        st.markdown("---")
+        st.markdown("### ℹ️ Session Info")
+        st.markdown(f"**Started**: {datetime.now().strftime('%H:%M')}")
+        
+        if not DEMO_MODE:
+            status = get_model_status()
+            if status['is_loaded']:
+                st.markdown("**Model**: Ready 🟢")
+            elif status['is_loading']:
+                st.markdown("**Model**: Loading 🟡")
+            else:
+                st.markdown("**Model**: Initializing 🔵")
+
 
 if __name__ == "__main__":
     main() 

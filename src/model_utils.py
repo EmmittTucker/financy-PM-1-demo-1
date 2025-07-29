@@ -1,36 +1,32 @@
 """
-Model utilities for AI Financial Portfolio Advisor
+AI Financial Portfolio Advisor - Model Utilities
 
-This module handles model loading, initialization, and inference operations
-for the fine-tuned Llama 3.1 8B financial advisory model.
+This module handles all model-related functionality including loading,
+authentication, memory management, and response generation.
 """
 
-import os
-import torch
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from huggingface_hub import login
-from typing import Optional, Tuple, List, Dict, Any
-import logging
-import gc
 import threading
 import time
-
+import logging
+import torch
+import gc
+from typing import Optional, Tuple, Dict, List
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from huggingface_hub import login
 from .config import (
-    MODEL_NAME, USE_AUTH_TOKEN, TEMPERATURE, TOP_P, REPETITION_PENALTY,
-    MAX_NEW_TOKENS, CONTEXT_WINDOW, SYSTEM_PROMPT_TEMPLATE, USER_PROFILE_TEMPLATE
+    MODEL_NAME, DEMO_MODE, USE_AUTH_TOKEN, MAX_NEW_TOKENS,
+    TEMPERATURE, TOP_P, CONTEXT_WINDOW
 )
 
-# Set up logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class FinancialAdvisorModel:
+class AsyncModelLoader:
     """
-    A wrapper class for the fine-tuned financial advisor model.
-    
-    This class handles model initialization, authentication, and inference
-    with proper memory management and error handling.
+    Asynchronous model loader that prevents blocking the main thread.
+    Uses background threading with st.cache_resource for optimal performance.
     """
     
     def __init__(self):
@@ -38,193 +34,147 @@ class FinancialAdvisorModel:
         self.tokenizer = None
         self.device = None
         self.is_loaded = False
-        self.loading_thread = None
+        self.is_loading = False
+        self.load_error = None
+        self.load_progress = 0
+        self.status_message = "Initializing..."
+        self._load_thread = None
     
     def clear_memory(self):
-        """Clear GPU and system memory"""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        """Clear GPU cache and collect garbage for memory optimization."""
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            logger.info("Memory cleared successfully")
+        except Exception as e:
+            logger.warning(f"Memory clearing failed: {e}")
     
     def authenticate(self) -> bool:
-        """
-        Authenticate with Hugging Face if required.
-        
-        Returns:
-            bool: True if authentication successful or not required, False otherwise
-        """
+        """Authenticate with Hugging Face if token is provided."""
         try:
-            if USE_AUTH_TOKEN:
-                hf_token = st.secrets.get("HF_TOKEN") or os.getenv("HF_TOKEN")
-                if hf_token:
-                    login(token=hf_token)
+            if USE_AUTH_TOKEN and hasattr(st, 'secrets') and 'HF_TOKEN' in st.secrets:
+                token = st.secrets["HF_TOKEN"]
+                login(token=token)
+                logger.info("Successfully authenticated with Hugging Face")
+                return True
+            elif USE_AUTH_TOKEN:
+                import os
+                token = os.getenv('HF_TOKEN')
+                if token:
+                    login(token=token)
                     logger.info("Successfully authenticated with Hugging Face")
                     return True
                 else:
-                    logger.warning("HF_TOKEN not found but authentication required")
+                    logger.warning("HF_TOKEN not found in environment or secrets")
                     return False
             return True
         except Exception as e:
-            logger.error(f"Authentication failed: {str(e)}")
+            logger.error(f"Authentication failed: {e}")
             return False
     
-    def load_model_with_timeout(self, timeout_seconds=300) -> Tuple[bool, str]:
-        """
-        Load model with timeout to prevent hanging
-        
-        Args:
-            timeout_seconds: Maximum time to wait for model loading
-            
-        Returns:
-            Tuple[bool, str]: (success_status, status_message)
-        """
-        def load_model_worker():
-            try:
-                self.load_model()
-            except Exception as e:
-                logger.error(f"Model loading failed: {e}")
-        
-        # Start loading in a separate thread
-        loading_thread = threading.Thread(target=load_model_worker)
-        loading_thread.daemon = True
-        loading_thread.start()
-        
-        # Wait with timeout
-        loading_thread.join(timeout=timeout_seconds)
-        
-        if loading_thread.is_alive():
-            return False, f"Model loading timed out after {timeout_seconds} seconds"
-        elif self.is_loaded:
-            return True, f"Model loaded successfully on {self.device}"
-        else:
-            return False, "Model loading failed"
-    
-    def load_model(self) -> Tuple[bool, str]:
-        """
-        Load the fine-tuned model with optimization configurations.
-        
-        Returns:
-            Tuple[bool, str]: (success_status, status_message)
-        """
+    def _background_load(self):
+        """Background thread function for model loading."""
         try:
-            logger.info(f"Loading model: {MODEL_NAME}")
+            self.status_message = "Authenticating with Hugging Face..."
+            self.load_progress = 5
             
-            # Clear memory before loading
+            if not self.authenticate():
+                raise Exception("Authentication failed")
+            
+            self.status_message = "Clearing memory..."
+            self.load_progress = 10
             self.clear_memory()
             
-            # Authenticate first
-            if not self.authenticate():
-                return False, "Authentication failed"
+            self.status_message = "Configuring quantization..."
+            self.load_progress = 15
             
-            # Configure quantization for memory efficiency
+            # 4-bit quantization configuration for memory efficiency
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
             )
             
+            self.status_message = "Loading tokenizer..."
+            self.load_progress = 25
+            
             # Load tokenizer
-            logger.info("Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(
                 MODEL_NAME,
                 trust_remote_code=True,
-                token=USE_AUTH_TOKEN if USE_AUTH_TOKEN else None
+                token=st.secrets.get("HF_TOKEN") if hasattr(st, 'secrets') and 'HF_TOKEN' in st.secrets else None
             )
             
-            # Add padding token if missing
+            # Set padding token
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
-                logger.info("Added padding token to tokenizer")
+                
+            self.status_message = "Loading model (this may take several minutes)..."
+            self.load_progress = 40
             
             # Load model with quantization
-            logger.info("Loading model with quantization...")
             self.model = AutoModelForCausalLM.from_pretrained(
                 MODEL_NAME,
                 quantization_config=quantization_config,
                 device_map="auto",
                 trust_remote_code=True,
                 torch_dtype=torch.float16,
-                token=USE_AUTH_TOKEN if USE_AUTH_TOKEN else None,
-                low_cpu_mem_usage=True  # Optimize memory usage
+                token=st.secrets.get("HF_TOKEN") if hasattr(st, 'secrets') and 'HF_TOKEN' in st.secrets else None,
+                low_cpu_mem_usage=True
             )
             
-            self.device = next(self.model.parameters()).device
-            self.is_loaded = True
+            self.status_message = "Finalizing setup..."
+            self.load_progress = 90
             
-            # Clear memory after loading
+            self.device = next(self.model.parameters()).device
             self.clear_memory()
             
+            self.status_message = "Model loaded successfully!"
+            self.load_progress = 100
+            self.is_loaded = True
+            
             logger.info(f"Model loaded successfully on device: {self.device}")
-            return True, f"Model loaded successfully on {self.device}"
             
         except Exception as e:
-            error_msg = f"Failed to load model: {str(e)}"
-            logger.error(error_msg)
-            self.clear_memory()  # Clean up on failure
-            return False, error_msg
+            self.load_error = str(e)
+            self.status_message = f"Loading failed: {str(e)}"
+            logger.error(f"Model loading failed: {e}")
+        finally:
+            self.is_loading = False
     
-    def format_conversation(
-        self, 
-        messages: List[Dict[str, str]], 
-        user_profile: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        Format conversation history for model input.
-        
-        Args:
-            messages: List of conversation messages
-            user_profile: Optional user profile information
-            
-        Returns:
-            str: Formatted conversation string
-        """
-        conversation = f"System: {SYSTEM_PROMPT_TEMPLATE}\n\n"
-        
-        # Add user profile if available
-        if user_profile:
-            profile_text = USER_PROFILE_TEMPLATE.format(**user_profile)
-            conversation += f"User: {profile_text}\n\n"
-        
-        # Add recent conversation history (limited by CONTEXT_WINDOW)
-        recent_messages = messages[-CONTEXT_WINDOW:]
-        for msg in recent_messages:
-            role = "User" if msg["role"] == "user" else "Assistant"
-            conversation += f"{role}: {msg['content']}\n\n"
-        
-        conversation += "Assistant:"
-        return conversation
+    def start_loading(self):
+        """Start background model loading if not already started."""
+        if not self.is_loading and not self.is_loaded:
+            self.is_loading = True
+            self.load_error = None
+            self.load_progress = 0
+            self._load_thread = threading.Thread(target=self._background_load, daemon=True)
+            self._load_thread.start()
     
-    def generate_response(
-        self, 
-        messages: List[Dict[str, str]], 
-        user_profile: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        Generate a response using the fine-tuned model.
-        
-        Args:
-            messages: Conversation history
-            user_profile: Optional user profile for personalization
-            
-        Returns:
-            str: Generated response
-        """
-        if not self.is_loaded:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
+    def get_status(self) -> Dict:
+        """Get current loading status for UI updates."""
+        return {
+            'is_loading': self.is_loading,
+            'is_loaded': self.is_loaded,
+            'progress': self.load_progress,
+            'message': self.status_message,
+            'error': self.load_error
+        }
+    
+    def generate_response(self, messages: List[Dict], user_profile: Dict) -> str:
+        """Generate response using the loaded model."""
+        if not self.is_loaded or self.model is None:
+            return "Model not loaded yet. Please wait for model initialization to complete."
         
         try:
-            # Format conversation
+            # Format conversation for model input
             conversation = self.format_conversation(messages, user_profile)
             
-            # Tokenize
-            inputs = self.tokenizer(
-                conversation,
-                return_tensors="pt",
-                truncation=True,
-                max_length=2048,
-                padding=True
-            ).to(self.device)
+            # Tokenize input
+            inputs = self.tokenizer(conversation, return_tensors="pt", truncation=True, max_length=CONTEXT_WINDOW)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
             
             # Generate response
             with torch.no_grad():
@@ -233,52 +183,70 @@ class FinancialAdvisorModel:
                     max_new_tokens=MAX_NEW_TOKENS,
                     temperature=TEMPERATURE,
                     top_p=TOP_P,
-                    repetition_penalty=REPETITION_PENALTY,
                     do_sample=True,
                     pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
+                    repetition_penalty=1.1
                 )
             
             # Decode response
-            full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract only the new assistant response
-            response = full_response.split("Assistant:")[-1].strip()
-            
-            logger.info(f"Generated response of length: {len(response)}")
-            return response
+            response = self.tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+            return response.strip()
             
         except Exception as e:
-            error_msg = f"Error generating response: {str(e)}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            logger.error(f"Response generation failed: {e}")
+            return f"I apologize, but I encountered an error while processing your request: {str(e)}"
     
-    def get_model_info(self) -> Dict[str, Any]:
-        """
-        Get information about the loaded model.
-        
-        Returns:
-            Dict containing model information
-        """
-        if not self.is_loaded:
-            return {"status": "not_loaded"}
-        
-        return {
-            "status": "loaded",
-            "model_name": MODEL_NAME,
-            "device": str(self.device),
-            "dtype": str(next(self.model.parameters()).dtype),
-            "memory_usage": torch.cuda.memory_allocated() if torch.cuda.is_available() else "N/A"
-        }
+    def format_conversation(self, messages: List[Dict], user_profile: Dict) -> str:
+        """Format conversation history and user profile for model input."""
+        try:
+            # Build context from user profile
+            profile_context = ""
+            if user_profile:
+                profile_parts = []
+                if user_profile.get('experience_level'):
+                    profile_parts.append(f"Experience Level: {user_profile['experience_level']}")
+                if user_profile.get('investment_goals'):
+                    profile_parts.append(f"Investment Goals: {', '.join(user_profile['investment_goals'])}")
+                if user_profile.get('risk_tolerance'):
+                    profile_parts.append(f"Risk Tolerance: {user_profile['risk_tolerance']}")
+                if user_profile.get('time_horizon'):
+                    profile_parts.append(f"Investment Time Horizon: {user_profile['time_horizon']}")
+                
+                if profile_parts:
+                    profile_context = f"User Profile: {'; '.join(profile_parts)}\n\n"
+            
+            # Build conversation history
+            conversation_history = ""
+            for msg in messages[-10:]:  # Keep last 10 messages for context
+                role = "Human" if msg["role"] == "user" else "Assistant"
+                conversation_history += f"{role}: {msg['content']}\n"
+            
+            # System prompt
+            system_prompt = f"""You are a knowledgeable and professional AI financial advisor. 
+Provide personalized investment advice based on the user's profile and questions.
+
+{profile_context}Recent Conversation:
+{conversation_history}
+
+Please provide helpful, accurate financial advice. End your response naturally."""
+            
+            return system_prompt
+            
+        except Exception as e:
+            logger.error(f"Error formatting conversation: {e}")
+            return "You are a helpful financial advisor. Please provide investment advice."
 
 
+# Cache the model loader instance
+@st.cache_resource
+def get_model_loader() -> AsyncModelLoader:
+    """Get cached instance of the async model loader."""
+    return AsyncModelLoader()
+
+
+# Demo response functions for fallback mode
 def get_demo_responses() -> Dict[str, str]:
-    """
-    Get demo responses for fallback mode.
-    
-    Returns:
-        Dict mapping keywords to demo responses
-    """
+    """Get demo responses for fallback mode."""
     return {
         "portfolio": "Based on your risk profile, I'd recommend a diversified portfolio with 60% stocks, 30% bonds, and 10% alternative investments.",
         "investment": "For long-term growth, consider low-cost index funds like S&P 500 ETFs, which historically return 7-10% annually.",
@@ -294,15 +262,7 @@ def get_demo_responses() -> Dict[str, str]:
 
 
 def generate_demo_response(prompt: str) -> str:
-    """
-    Generate a demo response for fallback mode.
-    
-    Args:
-        prompt: User's question/prompt
-        
-    Returns:
-        str: Demo response
-    """
+    """Generate a demo response for fallback mode."""
     demo_responses = get_demo_responses()
     prompt_lower = prompt.lower()
     
