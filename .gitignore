@@ -80,4 +80,13 @@ temp/
 *.tmp
 
 # HF Spaces specific
-flagged/ 
+flagged/
+
+# Streamlit secrets and config
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# Environment files
+.env
+.env.local
+.env.production 

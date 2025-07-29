@@ -10,7 +10,7 @@ MAX_SEQUENCE_LENGTH = 2048
 MAX_NEW_TOKENS = 256
 
 # Demo Mode Configuration
-DEMO_MODE = True  # Enabled by default for Hugging Face Spaces to avoid 50GB storage issues
+DEMO_MODE = False  # Disabled for investor demo - using real model
 USE_AUTH_TOKEN = True  # Set to True if model is private
 
 # Generation Parameters
