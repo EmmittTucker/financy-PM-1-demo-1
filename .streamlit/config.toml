@@ -10,6 +10,9 @@ maxUploadSize = 10
 port = 8501
 address = "0.0.0.0"
 baseUrlPath = ""
+maxMessageSize = 200
+scriptHealthCheckEnabled = true
+healthCheckTimeout = 300
 
 [browser]
 serverAddress = "localhost"

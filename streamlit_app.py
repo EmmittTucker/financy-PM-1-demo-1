@@ -20,14 +20,19 @@ from src.model_utils import FinancialAdvisorModel, generate_demo_response
 @st.cache_resource
 def initialize_model():
     """Initialize the financial advisor model"""
-    model_instance = FinancialAdvisorModel()
-    success, message = model_instance.load_model()
-    
-    if success:
-        st.success(f"✅ {message}")
-        return model_instance
-    else:
-        st.error(f"❌ {message}")
+    try:
+        model_instance = FinancialAdvisorModel()
+        success, message = model_instance.load_model()
+        
+        if success:
+            st.success(f"✅ {message}")
+            return model_instance
+        else:
+            st.error(f"❌ {message}")
+            st.info("💡 **Fallback**: Using demo mode for this session.")
+            return None
+    except Exception as e:
+        st.error(f"❌ Model initialization failed: {str(e)}")
         st.info("💡 **Fallback**: Using demo mode for this session.")
         return None
 
@@ -145,17 +150,53 @@ def main():
     if "model_instance" not in st.session_state:
         st.session_state.model_instance = None
         st.session_state.model_loaded = False
+        st.session_state.model_loading = False
+        st.session_state.fallback_mode = False
     
-    if not st.session_state.model_loaded and not DEMO_MODE:
-        with st.spinner("🔄 Initializing AI Financial Advisor..."):
-            model_instance = initialize_model()
-            st.session_state.model_instance = model_instance
-            st.session_state.model_loaded = True
+    # Handle model loading state
+    if not st.session_state.model_loaded and not DEMO_MODE and not st.session_state.model_loading:
+        st.session_state.model_loading = True
+        
+        # Show loading UI first, then load model
+        loading_container = st.container()
+        with loading_container:
+            st.info("🔄 **Loading AI Financial Advisor Model**")
+            st.markdown("⏱️ **First-time loading**: The 8B model takes 3-5 minutes on CPU. Please be patient!")
             
-            if model_instance is None:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Update progress indicators
+            for i in range(10):
+                progress_bar.progress((i + 1) * 10)
+                status_text.text(f"Loading model components... ({i+1}/10)")
+                time.sleep(0.1)  # Small delay to show progress
+            
+            # Now load the model
+            try:
+                model_instance = initialize_model()
+                st.session_state.model_instance = model_instance
+                st.session_state.model_loaded = True
+                
+                if model_instance is None:
+                    st.session_state.fallback_mode = True
+                    status_text.error("❌ Model loading failed - using demo mode")
+                else:
+                    st.session_state.fallback_mode = False
+                    status_text.success("✅ Model loaded successfully!")
+                    
+                progress_bar.progress(100)
+                time.sleep(1)
+                
+                # Clear loading UI and rerun
+                loading_container.empty()
+                st.rerun()
+                
+            except Exception as e:
                 st.session_state.fallback_mode = True
-            else:
-                st.session_state.fallback_mode = False
+                st.session_state.model_loaded = True
+                status_text.error(f"❌ Error: {str(e)}")
+                st.info("💡 **Fallback**: Using demo mode for this session.")
     
     # Initialize session state
     if "messages" not in st.session_state:

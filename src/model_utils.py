@@ -12,6 +12,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from huggingface_hub import login
 from typing import Optional, Tuple, List, Dict, Any
 import logging
+import gc
+import threading
+import time
 
 from .config import (
     MODEL_NAME, USE_AUTH_TOKEN, TEMPERATURE, TOP_P, REPETITION_PENALTY,
@@ -35,6 +38,13 @@ class FinancialAdvisorModel:
         self.tokenizer = None
         self.device = None
         self.is_loaded = False
+        self.loading_thread = None
+    
+    def clear_memory(self):
+        """Clear GPU and system memory"""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
     
     def authenticate(self) -> bool:
         """
@@ -58,6 +68,37 @@ class FinancialAdvisorModel:
             logger.error(f"Authentication failed: {str(e)}")
             return False
     
+    def load_model_with_timeout(self, timeout_seconds=300) -> Tuple[bool, str]:
+        """
+        Load model with timeout to prevent hanging
+        
+        Args:
+            timeout_seconds: Maximum time to wait for model loading
+            
+        Returns:
+            Tuple[bool, str]: (success_status, status_message)
+        """
+        def load_model_worker():
+            try:
+                self.load_model()
+            except Exception as e:
+                logger.error(f"Model loading failed: {e}")
+        
+        # Start loading in a separate thread
+        loading_thread = threading.Thread(target=load_model_worker)
+        loading_thread.daemon = True
+        loading_thread.start()
+        
+        # Wait with timeout
+        loading_thread.join(timeout=timeout_seconds)
+        
+        if loading_thread.is_alive():
+            return False, f"Model loading timed out after {timeout_seconds} seconds"
+        elif self.is_loaded:
+            return True, f"Model loaded successfully on {self.device}"
+        else:
+            return False, "Model loading failed"
+    
     def load_model(self) -> Tuple[bool, str]:
         """
         Load the fine-tuned model with optimization configurations.
@@ -67,6 +108,9 @@ class FinancialAdvisorModel:
         """
         try:
             logger.info(f"Loading model: {MODEL_NAME}")
+            
+            # Clear memory before loading
+            self.clear_memory()
             
             # Authenticate first
             if not self.authenticate():
@@ -85,7 +129,7 @@ class FinancialAdvisorModel:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 MODEL_NAME,
                 trust_remote_code=True,
-                use_auth_token=USE_AUTH_TOKEN if USE_AUTH_TOKEN else None
+                token=USE_AUTH_TOKEN if USE_AUTH_TOKEN else None
             )
             
             # Add padding token if missing
@@ -101,11 +145,15 @@ class FinancialAdvisorModel:
                 device_map="auto",
                 trust_remote_code=True,
                 torch_dtype=torch.float16,
-                use_auth_token=USE_AUTH_TOKEN if USE_AUTH_TOKEN else None
+                token=USE_AUTH_TOKEN if USE_AUTH_TOKEN else None,
+                low_cpu_mem_usage=True  # Optimize memory usage
             )
             
             self.device = next(self.model.parameters()).device
             self.is_loaded = True
+            
+            # Clear memory after loading
+            self.clear_memory()
             
             logger.info(f"Model loaded successfully on device: {self.device}")
             return True, f"Model loaded successfully on {self.device}"
@@ -113,6 +161,7 @@ class FinancialAdvisorModel:
         except Exception as e:
             error_msg = f"Failed to load model: {str(e)}"
             logger.error(error_msg)
+            self.clear_memory()  # Clean up on failure
             return False, error_msg
     
     def format_conversation(
