@@ -237,11 +237,15 @@ Please provide helpful, accurate financial advice. End your response naturally."
             return "You are a helpful financial advisor. Please provide investment advice."
 
 
-# Cache the model loader instance
-@st.cache_resource
+# Cache the model loader instance - REMOVED st.cache_resource to prevent blocking
+_model_loader_instance = None
+
 def get_model_loader() -> AsyncModelLoader:
-    """Get cached instance of the async model loader."""
-    return AsyncModelLoader()
+    """Get singleton instance of the async model loader with lazy initialization."""
+    global _model_loader_instance
+    if _model_loader_instance is None:
+        _model_loader_instance = AsyncModelLoader()
+    return _model_loader_instance
 
 
 # Demo response functions for fallback mode

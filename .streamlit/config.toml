@@ -12,14 +12,21 @@ address = "0.0.0.0"
 baseUrlPath = ""
 maxMessageSize = 200
 
+# Disable health checks to prevent timeout issues during model loading
+scriptHealthCheckEnabled = false
+
+# Additional performance settings
+fileWatcherType = "auto"
+allowRunOnSave = true
+
 [browser]
 serverAddress = "localhost"
 gatherUsageStats = false
 
 [theme]
-primaryColor = "#1f4e79"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
+primaryColor = "#FF6B6B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F0F5"
 textColor = "#262730"
 font = "sans serif"
 

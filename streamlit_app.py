@@ -94,8 +94,8 @@ def get_model_status():
     """Get model loading status with caching to prevent excessive checks."""
     current_time = time.time()
     
-    # Only check status every 2 seconds to prevent blocking
-    if current_time - st.session_state.model_check_time < 2:
+    # Only check status every 5 seconds to prevent blocking (increased from 2 seconds)
+    if current_time - st.session_state.model_check_time < 5:
         return st.session_state.get("last_model_status", {
             'is_loading': False,
             'is_loaded': False,
@@ -104,62 +104,89 @@ def get_model_status():
             'error': None
         })
     
+    # Lazy initialization of model loader (non-blocking)
     if st.session_state.model_loader is None:
-        st.session_state.model_loader = get_model_loader()
+        try:
+            st.session_state.model_loader = get_model_loader()
+        except Exception as e:
+            return {
+                'is_loading': False,
+                'is_loaded': False,
+                'progress': 0,
+                'message': 'Initialization failed',
+                'error': str(e)
+            }
     
-    status = st.session_state.model_loader.get_status()
-    st.session_state.last_model_status = status
-    st.session_state.model_check_time = current_time
-    
-    return status
+    try:
+        status = st.session_state.model_loader.get_status()
+        st.session_state.last_model_status = status
+        st.session_state.model_check_time = current_time
+        return status
+    except Exception as e:
+        return {
+            'is_loading': False,
+            'is_loaded': False,
+            'progress': 0,
+            'message': 'Status check failed',
+            'error': str(e)
+        }
 
 
 def start_model_loading():
     """Start model loading in background if not already started."""
-    if st.session_state.model_loader is None:
-        st.session_state.model_loader = get_model_loader()
-    
-    if not st.session_state.model_loader.is_loading and not st.session_state.model_loader.is_loaded:
-        st.session_state.model_loader.start_loading()
+    try:
+        if st.session_state.model_loader is None:
+            st.session_state.model_loader = get_model_loader()
+        
+        if not st.session_state.model_loader.is_loading and not st.session_state.model_loader.is_loaded:
+            st.session_state.model_loader.start_loading()
+    except Exception as e:
+        st.error(f"Failed to start model loading: {e}")
 
 
 def show_model_loading_status():
     """Display model loading status with progress indicators."""
-    status = get_model_status()
-    
-    if status['is_loading']:
-        st.markdown('<div class="loading-container">', unsafe_allow_html=True)
-        st.info("🔄 **AI Model Loading**")
-        st.markdown(f"**Status**: {status['message']}")
+    try:
+        status = get_model_status()
         
-        # Progress bar
-        progress = status['progress'] / 100.0
-        st.progress(progress)
-        st.markdown(f"**Progress**: {status['progress']:.0f}%")
-        
-        if status['progress'] < 30:
-            st.markdown("⏱️ **First-time loading**: This may take 3-5 minutes on CPU. Please be patient!")
-        elif status['progress'] < 70:
-            st.markdown("🧠 **Loading neural network**: The 8B parameter model is being initialized...")
-        else:
-            st.markdown("🔧 **Finalizing setup**: Almost ready!")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Auto-refresh every 2 seconds during loading
-        time.sleep(0.1)  # Small delay to prevent excessive refreshing
-        st.rerun()
-        
-    elif status['error']:
-        st.markdown('<div class="error-container">', unsafe_allow_html=True)
-        st.error(f"❌ **Model Loading Failed**: {status['error']}")
-        st.info("💡 **Fallback**: Using demo mode for this session.")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-    elif status['is_loaded']:
-        st.markdown('<div class="status-container">', unsafe_allow_html=True)
-        st.success("✅ **AI Model Ready**: Llama 3.1 8B Financial Advisor is online!")
-        st.markdown('</div>', unsafe_allow_html=True)
+        if status['is_loading']:
+            st.markdown('<div class="loading-container">', unsafe_allow_html=True)
+            st.info("🔄 **AI Model Loading**")
+            st.markdown(f"**Status**: {status['message']}")
+            
+            # Progress bar
+            progress = max(0, min(100, status['progress'])) / 100.0
+            st.progress(progress)
+            st.markdown(f"**Progress**: {status['progress']:.0f}%")
+            
+            if status['progress'] < 30:
+                st.markdown("⏱️ **First-time loading**: This may take 3-5 minutes on CPU. Please be patient!")
+            elif status['progress'] < 70:
+                st.markdown("🧠 **Loading neural network**: The 8B parameter model is being initialized...")
+            else:
+                st.markdown("🔧 **Finalizing setup**: Almost ready!")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Auto-refresh every 5 seconds during loading (reduced frequency)
+            time.sleep(0.1)
+            st.rerun()
+            
+        elif status['error']:
+            st.markdown('<div class="error-container">', unsafe_allow_html=True)
+            st.error(f"❌ **Model Loading Failed**: {status['error']}")
+            st.info("💡 **Fallback**: Using demo mode for this session.")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        elif status['is_loaded']:
+            st.markdown('<div class="status-container">', unsafe_allow_html=True)
+            st.success("✅ **AI Model Ready**: Llama 3.1 8B Financial Advisor is online!")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+    except Exception as e:
+        st.error(f"Error displaying model status: {e}")
+        # Fall back to demo mode on any error
+        st.info("💡 **Fallback**: Using demo mode due to loading error.")
 
 
 def show_user_profile_form():
